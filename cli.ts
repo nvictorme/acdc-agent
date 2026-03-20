@@ -1,6 +1,8 @@
 import * as readline from "node:readline";
 import { chatStream, type Message } from "./agent.ts";
 
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 export async function startCli() {
   const rl = readline.createInterface({
     input: process.stdin,
@@ -31,15 +33,28 @@ export async function startCli() {
 
       history.push({ role: "user", content: trimmed });
 
-      process.stdout.write("\nACDC Bot: ");
+      let frame = 0;
+      process.stdout.write("\n");
+      const spinner = setInterval(() => {
+        process.stdout.write(`\r${SPINNER[frame++ % SPINNER.length]} Procesando...`);
+      }, 80);
+
       let full = "";
+      let firstToken = true;
       try {
         for await (const token of chatStream(history)) {
+          if (firstToken) {
+            clearInterval(spinner);
+            process.stdout.write("\rACDC Bot: " + " ".repeat(14) + "\rACDC Bot: ");
+            firstToken = false;
+          }
           process.stdout.write(token);
           full += token;
         }
       } catch (e: any) {
-        console.error(`\n[Error: ${e.message}]`);
+        clearInterval(spinner);
+        process.stdout.write("\r" + " ".repeat(20) + "\r");
+        console.error(`[Error: ${e.message}]`);
         history.pop();
         return prompt();
       }

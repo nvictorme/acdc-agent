@@ -6,49 +6,59 @@ Agente de ventas conversacional para **AC/DC**, empresa suplidora de materiales 
 
 ## Cómo funciona
 
-El agente carga el catálogo completo de `productos.json` (711 productos) y lo inyecta directamente en el system prompt junto con las instrucciones de `SYSTEM.md`. Cada conversación comienza con el modelo viendo todos los productos en su ventana de contexto.
+El agente usa **Anthropic Claude** con **tool calling** para buscar productos. El catálogo NO está en el system prompt — en su lugar, el modelo debe llamar la herramienta `buscar_productos` antes de mencionar cualquier producto. La herramienta hace la búsqueda en `productos.json` y retorna solo resultados reales.
 
 ### Por qué no alucina
 
-Enfoques anteriores con RAG, embeddings y memoria fallan porque el modelo recibe resultados parciales de la búsqueda y llena los vacíos de memoria con productos inventados. Este agente usa una estrategia diferente:
+Enfoques anteriores (RAG, memoria, catálogo en el system prompt) fallan porque el modelo genera productos de su memoria de entrenamiento sin importar las instrucciones. Este agente lo resuelve arquitectónicamente:
 
-**El catálogo completo vive en el system prompt de cada request.**
+**El catálogo no está en el contexto. El modelo no tiene de dónde inventar.**
 
-El catálogo compactado (~31K tokens, solo los campos esenciales) se inyecta literalmente en el contexto antes de cada conversación. El modelo ve todos los 711 productos — sin recuperación, sin aproximaciones, sin vacíos. Las reglas anti-alucinación del system prompt (`SYSTEM.md`) refuerzan que solo mencione productos visibles en el JSON que tiene encima. Si el producto no aparece en ese JSON, no existe.
+El flujo es:
+1. El cliente pide un producto
+2. El modelo llama `buscar_productos("query")` — **obligatorio por instrucciones en `SYSTEM.md`**
+3. La herramienta busca en `productos.json` y retorna coincidencias reales
+4. El modelo formatea únicamente lo que la herramienta le devolvió
 
-No hay forma de que el modelo invente un SKU o precio: está mirando la lista completa y las reglas le dicen que solo hable de lo que ve ahí.
+Si la herramienta retorna vacío, el producto no existe. El modelo no tiene acceso a ninguna otra fuente de productos.
 
 ---
 
 ## Archivos
 
 ```
-index.ts          entrada principal — CLI o servidor HTTP según args
-catalog.ts        carga productos.json y genera el bloque compacto del catálogo
-agent.ts          construye el system prompt, maneja llamadas al LLM
+index.ts          entrada principal — CLI (default) o servidor HTTP ("serve")
+catalog.ts        carga productos.json, búsqueda fuzzy con mapa de sinónimos
+agent.ts          system prompt, herramienta buscar_productos, loop Anthropic
 server.ts         API HTTP con Bun.serve()
-cli.ts            chat interactivo en terminal con streaming
-SYSTEM.md         instrucciones del agente (rol, reglas, formato)
+cli.ts            chat interactivo en terminal con spinner y streaming
+SYSTEM.md         instrucciones del agente (rol, reglas anti-alucinación, formato)
 productos.json    catálogo fuente de verdad (711 productos, 20 categorías)
 .env.example      plantilla de variables de entorno
 ```
 
 ### `catalog.ts`
 
-Lee `productos.json` y compacta cada producto a solo los campos que el agente necesita: `sku`, `codigo`, `nombre`, `categoria`, `bcv_g`, `mostrar`. Cachea el resultado en memoria para no releer el archivo en cada request. El campo `mostrar` permite al agente saber qué productos están activos (1) sin exponer el campo interno al cliente.
+Carga `productos.json` y compacta cada producto a los campos esenciales: `sku`, `codigo`, `nombre`, `categoria`, `bcv_g`, `mostrar`. Cachea en memoria.
+
+Exporta `searchProducts(query, limit)` que:
+- Normaliza texto (minúsculas, sin acentos)
+- Expande tokens con un mapa de sinónimos (`breaker` ↔ `termomagnetico` ↔ `interruptor`, `protector` ↔ `supervisor`, `rele` ↔ `relay`, etc.)
+- Puntúa cada producto por coincidencia de tokens contra `nombre + categoria`
+- Retorna los top N resultados ordenados por score, luego por `mostrar` (activos primero)
 
 ### `agent.ts`
 
-Lee `SYSTEM.md`, le agrega el bloque JSON del catálogo al final, y lo usa como system prompt en cada llamada al LLM. Exporta dos funciones:
+Lee `SYSTEM.md` una vez y lo usa como system prompt en cada llamada. El catálogo **no** se inyecta en el prompt.
 
-- `chat(messages)` — respuesta completa, retorna string
-- `chatStream(messages)` — respuesta en streaming, retorna `AsyncGenerator<string>`
+Registra la herramienta `buscar_productos` en Anthropic con su `input_schema`. Exporta:
 
-El cliente OpenAI se configura con `OPENAI_API_KEY`, `OPENAI_BASE_URL` y `OPENAI_MODEL`. Al ser OpenAI-compatible, funciona con cualquier proveedor que use ese protocolo.
+- `chat(messages)` — respuesta completa, corre el loop de tool use hasta que `stop_reason !== "tool_use"`
+- `chatStream(messages)` — streaming con `client.messages.stream()`, hace loop en tool use antes de continuar el stream
 
 ### `server.ts`
 
-Servidor HTTP con `Bun.serve()`. Rutas disponibles:
+Servidor HTTP con `Bun.serve()`. Rutas:
 
 | Método | Ruta | Descripción |
 |--------|------|-------------|
@@ -72,20 +82,27 @@ Respuesta de `/chat`:
 { "reply": "..." }
 ```
 
-`/chat/stream` retorna eventos SSE con tokens individuales (`data: "token"`) y termina con `data: [DONE]`.
+`/chat/stream` retorna eventos SSE con tokens (`data: "token"`) y termina con `data: [DONE]`.
 
 ### `cli.ts`
 
-Chat interactivo en terminal con historial de conversación en memoria. Muestra las respuestas token por token a medida que llegan. Comandos disponibles:
+Chat interactivo en terminal con historial de conversación en memoria. Muestra un spinner animado mientras espera el primer token, luego hace streaming inline. Comandos:
 
-- `/clear` — reinicia el historial de conversación
+- `/clear` — reinicia el historial
 - `/exit` — cierra el chat
+
+### `SYSTEM.md`
+
+Instrucciones del agente sin datos de productos. Contiene:
+- **REGLA #0**: siempre llamar `buscar_productos` antes de cualquier mención de producto
+- **REGLA #1**: si la herramienta retorna vacío → el producto no existe, nunca inventar
+- **REGLA #2**: búsqueda silenciosa — nunca revelar al cliente que existe una herramienta o sistema
+- **REGLA #3**: productos primero, preguntas después
+- Rol, personalidad, formato de precios, formato de cotizaciones, asesoría técnica
 
 ---
 
 ## Variables de entorno
-
-Copia `.env.example` a `.env` y completa los valores:
 
 ```bash
 cp .env.example .env
@@ -93,12 +110,9 @@ cp .env.example .env
 
 | Variable | Requerida | Descripción |
 |----------|-----------|-------------|
-| `OPENAI_API_KEY` | Sí | API key del proveedor |
-| `OPENAI_BASE_URL` | No | Base URL del endpoint (default: OpenAI) |
-| `OPENAI_MODEL` | No | Modelo a usar (default: `gpt-4o`) |
+| `ANTHROPIC_API_KEY` | Sí | API key de Anthropic |
+| `ANTHROPIC_MODEL` | No | Modelo a usar (default: `claude-sonnet-4-5`) |
 | `PORT` | No | Puerto del servidor HTTP (default: `3000`) |
-
-`OPENAI_BASE_URL` permite apuntar a cualquier endpoint compatible con la API de OpenAI: Groq, Together AI, llama.cpp local, etc.
 
 ---
 
@@ -112,16 +126,12 @@ bun install
 
 ```bash
 bun run dev
-# o
-bun index.ts
 ```
 
 ### Servidor HTTP
 
 ```bash
 bun run serve
-# o
-bun index.ts serve
 ```
 
 ### Ejemplos con curl
@@ -145,7 +155,7 @@ curl http://localhost:3000/health
 
 ## Catálogo
 
-`productos.json` es la única fuente de verdad. Contiene 711 productos en 20 categorías:
+`productos.json` es la única fuente de verdad. 711 productos en 20 categorías:
 
 - Protectores y Supervisores
 - Termomagnetico AC / DC
@@ -161,4 +171,4 @@ curl http://localhost:3000/health
 - Variadores de Frecuencia y PLC
 - Herramientas, y más
 
-El campo `Mostrar` del JSON original controla visibilidad: el agente presenta proactivamente solo productos activos (`mostrar=1`, 467 productos) pero conoce todos los 711 por si un cliente consulta específicamente por uno inactivo.
+El campo `Mostrar` controla visibilidad: `mostrar=1` (467 productos activos) se presentan proactivamente. Los `mostrar=0` (244) son conocidos por el agente por si el cliente los consulta específicamente.
