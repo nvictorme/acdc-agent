@@ -5,10 +5,14 @@ const port = parseInt(process.env.PORT || "3000", 10);
 export function startServer() {
   Bun.serve({
     port,
-    routes: {
-      "GET /health": () => Response.json({ ok: true }),
+    async fetch(req) {
+      const url = new URL(req.url);
 
-      "POST /chat": async (req) => {
+      if (req.method === "GET" && url.pathname === "/health") {
+        return Response.json({ ok: true });
+      }
+
+      if (req.method === "POST" && url.pathname === "/chat") {
         try {
           const body = await req.json() as { messages?: Message[] };
           if (!body.messages?.length) {
@@ -19,9 +23,9 @@ export function startServer() {
         } catch (e: any) {
           return Response.json({ error: e.message }, { status: 500 });
         }
-      },
+      }
 
-      "POST /chat/stream": async (req) => {
+      if (req.method === "POST" && url.pathname === "/chat/stream") {
         try {
           const body = await req.json() as { messages?: Message[] };
           if (!body.messages?.length) {
@@ -52,7 +56,9 @@ export function startServer() {
         } catch (e: any) {
           return Response.json({ error: e.message }, { status: 500 });
         }
-      },
+      }
+
+      return Response.json({ error: "Not found" }, { status: 404 });
     },
   });
   console.log(`AC/DC Agent API running on http://localhost:${port}`);
