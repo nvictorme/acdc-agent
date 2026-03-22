@@ -1,12 +1,18 @@
+import path from "node:path";
 import { chat, chatStream, type Message } from "./agent.ts";
 
 const port = parseInt(process.env.PORT || "3000", 10);
+const indexHtml = Bun.file(path.join(import.meta.dir, "public", "index.html"));
 
 export function startServer() {
   Bun.serve({
     port,
     async fetch(req) {
       const url = new URL(req.url);
+
+      if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
+        return new Response(indexHtml, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
 
       if (req.method === "GET" && url.pathname === "/health") {
         return Response.json({ ok: true });

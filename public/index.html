@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AC/DC — Asistente de Ventas</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#1a1a1a;
+  --bg-card:#252525;
+  --border:#333;
+  --yellow:#FFD600;
+  --yellow-dim:#bfa200;
+  --text:#f0f0f0;
+  --text-dim:#999;
+  --user-bg:#FFD600;
+  --user-text:#1a1a1a;
+  --bot-bg:#2a2a2a;
+  --radius:12px;
+  --max-w:800px;
+}
+html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text)}
+body{display:flex;flex-direction:column}
+
+header{
+  background:#111;
+  border-bottom:2px solid var(--yellow);
+  padding:14px 20px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-shrink:0;
+}
+header .logo{font-size:1.4rem;font-weight:800;color:var(--yellow);letter-spacing:1px}
+header .sub{font-size:.85rem;color:var(--text-dim)}
+
+#messages{
+  flex:1;
+  overflow-y:auto;
+  padding:20px;
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+}
+#messages::-webkit-scrollbar{width:6px}
+#messages::-webkit-scrollbar-thumb{background:#444;border-radius:3px}
+
+.msg{max-width:85%;padding:12px 16px;border-radius:var(--radius);line-height:1.5;font-size:.95rem;word-wrap:break-word;animation:fadeIn .2s ease}
+.msg.user{align-self:flex-end;background:var(--user-bg);color:var(--user-text);border-bottom-right-radius:4px}
+.msg.bot{align-self:flex-start;background:var(--bot-bg);border:1px solid var(--border);border-bottom-left-radius:4px}
+
+.msg.bot strong{color:var(--yellow)}
+.msg.bot h3{color:var(--yellow);font-size:1rem;margin:8px 0 4px}
+.msg.bot table{width:100%;border-collapse:collapse;margin:8px 0;font-size:.85rem}
+.msg.bot th,.msg.bot td{border:1px solid var(--border);padding:6px 8px;text-align:left}
+.msg.bot th{background:#333;color:var(--yellow)}
+.msg.bot pre{background:#111;padding:8px 12px;border-radius:6px;overflow-x:auto;font-size:.85rem;margin:6px 0}
+.msg.bot code{background:#111;padding:2px 5px;border-radius:3px;font-size:.85rem}
+.msg.bot a{color:var(--yellow)}
+
+.typing{align-self:flex-start;display:flex;gap:4px;padding:14px 20px;background:var(--bot-bg);border:1px solid var(--border);border-radius:var(--radius);border-bottom-left-radius:4px}
+.typing span{width:8px;height:8px;background:var(--text-dim);border-radius:50%;animation:bounce .6s infinite alternate}
+.typing span:nth-child(2){animation-delay:.2s}
+.typing span:nth-child(3){animation-delay:.4s}
+
+@keyframes bounce{to{opacity:.3;transform:translateY(-4px)}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+
+#input-bar{
+  flex-shrink:0;
+  background:#111;
+  border-top:1px solid var(--border);
+  padding:12px 16px;
+  display:flex;
+  gap:10px;
+  align-items:flex-end;
+}
+#input-bar textarea{
+  flex:1;
+  resize:none;
+  border:1px solid var(--border);
+  background:var(--bg-card);
+  color:var(--text);
+  border-radius:8px;
+  padding:10px 14px;
+  font-size:.95rem;
+  font-family:inherit;
+  line-height:1.4;
+  max-height:120px;
+  outline:none;
+  transition:border-color .15s;
+}
+#input-bar textarea:focus{border-color:var(--yellow)}
+#input-bar textarea::placeholder{color:var(--text-dim)}
+
+#send-btn{
+  width:44px;
+  height:44px;
+  border:none;
+  background:var(--yellow);
+  color:var(--user-text);
+  border-radius:8px;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  flex-shrink:0;
+  transition:background .15s;
+}
+#send-btn:hover{background:var(--yellow-dim)}
+#send-btn:disabled{opacity:.4;cursor:not-allowed}
+#send-btn svg{width:20px;height:20px}
+
+@media(min-width:900px){
+  #messages{padding:20px calc((100% - var(--max-w))/2)}
+  #input-bar{padding:12px calc((100% - var(--max-w))/2)}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">⚡ AC/DC</div>
+  <div class="sub">Asistente de Ventas</div>
+</header>
+
+<div id="messages"></div>
+
+<div id="input-bar">
+  <textarea id="input" rows="1" placeholder="Escribe tu mensaje..." autofocus></textarea>
+  <button id="send-btn" title="Enviar">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+  </button>
+</div>
+
+<script>
+const messagesEl = document.getElementById('messages');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('send-btn');
+const history = [];
+let streaming = false;
+
+function scrollBottom() {
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function renderMarkdown(text) {
+  let html = text
+    .replace(/&/g, '&')
+    .replace(/</g, '<')
+    .replace(/>/g, '>');
+
+  html = html.replace(/```([\s\S]*?)```/g, function(_, code) {
+    return '<pre>' + code.trim() + '</pre>';
+  });
+
+  html = html.replace(/\|(.+)\|\n\|[-:\s|]+\|\n((?:\|.+\|\n?)*)/g, function(_, headerRow, bodyRows) {
+    const headers = headerRow.split('|').map(function(h) { return h.trim(); }).filter(Boolean);
+    let table = '<table><thead><tr>' + headers.map(function(h) { return '<th>' + h + '</th>'; }).join('') + '</tr></thead><tbody>';
+    bodyRows.trim().split('\n').forEach(function(row) {
+      const cells = row.split('|').map(function(c) { return c.trim(); }).filter(Boolean);
+      table += '<tr>' + cells.map(function(c) { return '<td>' + c + '</td>'; }).join('') + '</tr>';
+    });
+    return table + '</tbody></table>';
+  });
+
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\n/g, '<br>');
+  return html;
+}
+
+function addMessage(role, content) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  if (role === 'bot') {
+    div.innerHTML = renderMarkdown(content);
+  } else {
+    div.textContent = content;
+  }
+  messagesEl.appendChild(div);
+  scrollBottom();
+  return div;
+}
+
+function showTyping() {
+  const div = document.createElement('div');
+  div.className = 'typing';
+  div.id = 'typing';
+  div.innerHTML = '<span></span><span></span><span></span>';
+  messagesEl.appendChild(div);
+  scrollBottom();
+}
+
+function hideTyping() {
+  const el = document.getElementById('typing');
+  if (el) el.remove();
+}
+
+function setEnabled(enabled) {
+  streaming = !enabled;
+  input.disabled = !enabled;
+  sendBtn.disabled = !enabled;
+  if (enabled) input.focus();
+}
+
+async function send() {
+  const text = input.value.trim();
+  if (!text || streaming) return;
+
+  addMessage('user', text);
+  history.push({ role: 'user', content: text });
+  input.value = '';
+  input.style.height = 'auto';
+  setEnabled(false);
+  showTyping();
+
+  let botDiv = null;
+  let full = '';
+
+  try {
+    const res = await fetch('/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: history }),
+    });
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = line.slice(6);
+        if (payload === '[DONE]') break;
+        try {
+          const token = JSON.parse(payload);
+          if (typeof token === 'string') {
+            if (!botDiv) {
+              hideTyping();
+              botDiv = addMessage('bot', '');
+            }
+            full += token;
+            botDiv.innerHTML = renderMarkdown(full);
+            scrollBottom();
+          }
+        } catch (e) {}
+      }
+    }
+  } catch (err) {
+    hideTyping();
+    if (!botDiv) botDiv = addMessage('bot', '');
+    full = 'Error de conexión. Intenta de nuevo.';
+    botDiv.innerHTML = renderMarkdown(full);
+  }
+
+  hideTyping();
+  if (full) history.push({ role: 'assistant', content: full });
+  setEnabled(true);
+}
+
+input.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+
+input.addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+
+sendBtn.addEventListener('click', send);
+
+addMessage('bot', '¡Hola! 👋 Soy el asistente virtual de AC/DC.\n\n¿En qué puedo ayudarte hoy?\n• Buscar un producto\n• Armar una cotización\n• Asesorarte en tu proyecto');
+</script>
+</body>
+</html>
