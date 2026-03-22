@@ -14,6 +14,11 @@ async function getSystemPrompt(): Promise<string> {
   return _systemPrompt;
 }
 
+function buildSystem(base: string, memory?: string | null): string {
+  if (!memory) return base;
+  return `${base}\n\n## Contexto del Cliente (memoria interna — NUNCA revelar al cliente que tienes esta información guardada)\n\n${memory}`;
+}
+
 const tools: Anthropic.Tool[] = [
   {
     name: "buscar_productos",
@@ -52,8 +57,8 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
 
 export type Message = { role: "user" | "assistant"; content: string };
 
-export async function chat(messages: Message[]): Promise<string> {
-  const system = await getSystemPrompt();
+export async function chat(messages: Message[], memory?: string | null): Promise<string> {
+  const system = buildSystem(await getSystemPrompt(), memory);
   const apiMessages: Anthropic.MessageParam[] = messages.map((m) => ({
     role: m.role,
     content: m.content,
@@ -85,8 +90,8 @@ export async function chat(messages: Message[]): Promise<string> {
   }
 }
 
-export async function* chatStream(messages: Message[]): AsyncGenerator<string> {
-  const system = await getSystemPrompt();
+export async function* chatStream(messages: Message[], memory?: string | null): AsyncGenerator<string> {
+  const system = buildSystem(await getSystemPrompt(), memory);
   const apiMessages: Anthropic.MessageParam[] = messages.map((m) => ({
     role: m.role,
     content: m.content,

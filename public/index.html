@@ -33,7 +33,19 @@ header{
   flex-shrink:0;
 }
 header .logo{font-size:1.4rem;font-weight:800;color:var(--yellow);letter-spacing:1px}
-header .sub{font-size:.85rem;color:var(--text-dim)}
+header .sub{font-size:.85rem;color:var(--text-dim);flex:1}
+#new-chat-btn{
+  background:none;
+  border:1px solid var(--yellow);
+  color:var(--yellow);
+  padding:6px 14px;
+  border-radius:6px;
+  font-size:.8rem;
+  font-weight:600;
+  cursor:pointer;
+  transition:background .15s,color .15s;
+}
+#new-chat-btn:hover{background:var(--yellow);color:#111}
 
 #messages{
   flex:1;
@@ -123,6 +135,7 @@ header .sub{font-size:.85rem;color:var(--text-dim)}
 <header>
   <div class="logo">⚡ AC/DC</div>
   <div class="sub">Asistente de Ventas</div>
+  <button id="new-chat-btn" title="Nuevo chat">+ Nuevo Chat</button>
 </header>
 
 <div id="messages"></div>
@@ -138,8 +151,21 @@ header .sub{font-size:.85rem;color:var(--text-dim)}
 const messagesEl = document.getElementById('messages');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send-btn');
+const newChatBtn = document.getElementById('new-chat-btn');
 const history = [];
 let streaming = false;
+let sessionId = sessionStorage.getItem('sessionId');
+
+function generateSessionId() {
+  return 'xxxx-xxxx-xxxx'.replace(/x/g, function() {
+    return Math.floor(Math.random() * 16).toString(16);
+  });
+}
+
+if (!sessionId) {
+  sessionId = generateSessionId();
+  sessionStorage.setItem('sessionId', sessionId);
+}
 
 function scrollBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -147,9 +173,9 @@ function scrollBottom() {
 
 function renderMarkdown(text) {
   let html = text
-    .replace(/&/g, '&')
-    .replace(/</g, '<')
-    .replace(/>/g, '>');
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 
   html = html.replace(/```([\s\S]*?)```/g, function(_, code) {
     return '<pre>' + code.trim() + '</pre>';
@@ -207,6 +233,25 @@ function setEnabled(enabled) {
   if (enabled) input.focus();
 }
 
+function showGreeting() {
+  addMessage('bot', '¡Hola! 👋 Soy el asistente virtual de AC/DC.\n\n¿En qué puedo ayudarte hoy?\n• Buscar un producto\n• Armar una cotización\n• Asesorarte en tu proyecto');
+}
+
+async function restoreSession() {
+  try {
+    const res = await fetch('/sessions/' + sessionId);
+    const data = await res.json();
+    if (data.messages && data.messages.length > 0) {
+      data.messages.forEach(function(m) {
+        history.push(m);
+        addMessage(m.role === 'user' ? 'user' : 'bot', m.content);
+      });
+      return;
+    }
+  } catch (e) {}
+  showGreeting();
+}
+
 async function send() {
   const text = input.value.trim();
   if (!text || streaming) return;
@@ -225,7 +270,7 @@ async function send() {
     const res = await fetch('/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: history }),
+      body: JSON.stringify({ messages: history, sessionId: sessionId }),
     });
 
     const reader = res.body.getReader();
@@ -254,6 +299,9 @@ async function send() {
             full += token;
             botDiv.innerHTML = renderMarkdown(full);
             scrollBottom();
+          } else if (token && token.sessionId) {
+            sessionId = token.sessionId;
+            sessionStorage.setItem('sessionId', sessionId);
           }
         } catch (e) {}
       }
@@ -270,6 +318,15 @@ async function send() {
   setEnabled(true);
 }
 
+newChatBtn.addEventListener('click', function() {
+  history.length = 0;
+  messagesEl.innerHTML = '';
+  sessionId = generateSessionId();
+  sessionStorage.setItem('sessionId', sessionId);
+  showGreeting();
+  input.focus();
+});
+
 input.addEventListener('keydown', function(e) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
@@ -284,7 +341,7 @@ input.addEventListener('input', function() {
 
 sendBtn.addEventListener('click', send);
 
-addMessage('bot', '¡Hola! 👋 Soy el asistente virtual de AC/DC.\n\n¿En qué puedo ayudarte hoy?\n• Buscar un producto\n• Armar una cotización\n• Asesorarte en tu proyecto');
+restoreSession();
 </script>
 </body>
 </html>
