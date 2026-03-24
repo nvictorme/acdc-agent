@@ -147,6 +147,8 @@ cp .env.example .env
 | `REDIS_URL`               | No        | `redis://localhost:6379` | URL de conexión a Redis                          |
 | `SESSION_TTL_DAYS`        | No        | `7`                      | Días de retención de sesiones en Redis           |
 | `MEMORY_EXTRACT_INTERVAL` | No        | `3`                      | Cada cuántos turnos de usuario se extrae memoria |
+| `RATE_LIMIT_MAX`          | No        | `20`                     | Requests permitidos por ventana de tiempo        |
+| `RATE_LIMIT_WINDOW_MS`    | No        | `60000`                  | Tamaño de la ventana de rate limit en ms         |
 
 ---
 
