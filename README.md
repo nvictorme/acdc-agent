@@ -4,6 +4,13 @@ Agente de ventas conversacional para **AC/DC**, empresa suplidora de materiales 
 
 ---
 
+## Requisitos
+
+- **[Bun](https://bun.sh) >= 1.0** — runtime y gestor de paquetes
+- **Redis >= 6** — almacenamiento de sesiones y memoria por usuario
+
+---
+
 ## Cómo funciona
 
 El agente usa **Anthropic Claude** con **tool calling** para buscar productos. El catálogo NO está en el system prompt — en su lugar, el modelo debe llamar la herramienta `buscar_productos` antes de mencionar cualquier producto. La herramienta hace la búsqueda en `productos.json` y retorna solo resultados reales.
@@ -15,6 +22,7 @@ Enfoques anteriores (RAG, memoria, catálogo en el system prompt) fallan porque 
 **El catálogo no está en el contexto. El modelo no tiene de dónde inventar.**
 
 El flujo es:
+
 1. El cliente pide un producto
 2. El modelo llama `buscar_productos("query")` — **obligatorio por instrucciones en `SYSTEM.md`**
 3. La herramienta busca en `productos.json` y retorna coincidencias reales
@@ -30,7 +38,9 @@ Si la herramienta retorna vacío, el producto no existe. El modelo no tiene acce
 index.ts          entrada principal — CLI (default) o servidor HTTP ("serve")
 catalog.ts        carga productos.json, búsqueda fuzzy con mapa de sinónimos
 agent.ts          system prompt, herramienta buscar_productos, loop Anthropic
-server.ts         API HTTP con Bun.serve()
+server.ts         API HTTP con Bun.serve() y UI web
+redis.ts          cliente Redis — sesiones y memoria persistente por usuario
+memory.ts         extracción de memoria del cliente con Claude
 cli.ts            chat interactivo en terminal con spinner y streaming
 SYSTEM.md         instrucciones del agente (rol, reglas anti-alucinación, formato)
 productos.json    catálogo fuente de verdad (711 productos, 20 categorías)
@@ -42,6 +52,7 @@ productos.json    catálogo fuente de verdad (711 productos, 20 categorías)
 Carga `productos.json` y compacta cada producto a los campos esenciales: `sku`, `codigo`, `nombre`, `categoria`, `bcv_g`, `mostrar`. Cachea en memoria.
 
 Exporta `searchProducts(query, limit)` que:
+
 - Normaliza texto (minúsculas, sin acentos)
 - Expande tokens con un mapa de sinónimos (`breaker` ↔ `termomagnetico` ↔ `interruptor`, `protector` ↔ `supervisor`, `rele` ↔ `relay`, etc.)
 - Puntúa cada producto por coincidencia de tokens contra `nombre + categoria`
@@ -53,18 +64,21 @@ Lee `SYSTEM.md` una vez y lo usa como system prompt en cada llamada. El catálog
 
 Registra la herramienta `buscar_productos` en Anthropic con su `input_schema`. Exporta:
 
-- `chat(messages)` — respuesta completa, corre el loop de tool use hasta que `stop_reason !== "tool_use"`
-- `chatStream(messages)` — streaming con `client.messages.stream()`, hace loop en tool use antes de continuar el stream
+- `chat(messages, memory?)` — respuesta completa, corre el loop de tool use hasta que `stop_reason !== "tool_use"`
+- `chatStream(messages, memory?)` — streaming con `client.messages.stream()`, hace loop en tool use antes de continuar el stream
 
 ### `server.ts`
 
-Servidor HTTP con `Bun.serve()`. Rutas:
+Servidor HTTP con `Bun.serve()`. Sirve una UI web en `/` y expone las siguientes rutas:
 
-| Método | Ruta | Descripción |
-|--------|------|-------------|
-| `GET` | `/health` | Verificación de estado |
-| `POST` | `/chat` | Respuesta completa en JSON |
-| `POST` | `/chat/stream` | Respuesta por streaming SSE |
+| Método | Ruta            | Descripción                            |
+| ------ | --------------- | -------------------------------------- |
+| `GET`  | `/`             | UI web                                 |
+| `GET`  | `/health`       | Verificación de estado                 |
+| `GET`  | `/sessions`     | Lista de sesiones del usuario (cookie) |
+| `GET`  | `/sessions/:id` | Mensajes de una sesión específica      |
+| `POST` | `/chat`         | Respuesta completa en JSON             |
+| `POST` | `/chat/stream`  | Respuesta por streaming SSE            |
 
 Body esperado en `/chat` y `/chat/stream`:
 
@@ -72,17 +86,33 @@ Body esperado en `/chat` y `/chat/stream`:
 {
   "messages": [
     { "role": "user", "content": "necesito un breaker de 20 amperios" }
-  ]
+  ],
+  "sessionId": "uuid-opcional"
 }
 ```
 
 Respuesta de `/chat`:
 
 ```json
-{ "reply": "..." }
+{ "reply": "...", "sessionId": "uuid" }
 ```
 
-`/chat/stream` retorna eventos SSE con tokens (`data: "token"`) y termina con `data: [DONE]`.
+`/chat/stream` retorna eventos SSE con tokens (`data: "token"`), un evento final con `{ "sessionId": "uuid" }` y termina con `data: [DONE]`.
+
+La identidad del usuario se mantiene mediante una cookie `acdc_uid` (UUID generado automáticamente). Las sesiones y la memoria se persisten en Redis.
+
+### `redis.ts`
+
+Cliente Redis compartido. Maneja la conexión lazy y exporta:
+
+- `saveSession` / `loadSession` / `listSessions` — historial de conversación por usuario y sesión
+- `saveMemory` / `loadMemory` — memoria acumulada del cliente (JSON con nombre, empresa, proyectos, etc.)
+
+TTL de sesiones configurable con `SESSION_TTL_DAYS` (default: 7 días).
+
+### `memory.ts`
+
+Usa Claude para extraer y consolidar hechos clave del cliente a partir del historial de conversación (nombre, empresa, ubicación, proyectos, intereses). La memoria se fusiona con la existente y se inyecta en el system prompt de las siguientes conversaciones. La extracción ocurre cada `MEMORY_EXTRACT_INTERVAL` turnos del usuario (default: 3).
 
 ### `cli.ts`
 
@@ -94,6 +124,7 @@ Chat interactivo en terminal con historial de conversación en memoria. Muestra 
 ### `SYSTEM.md`
 
 Instrucciones del agente sin datos de productos. Contiene:
+
 - **REGLA #0**: siempre llamar `buscar_productos` antes de cualquier mención de producto
 - **REGLA #1**: si la herramienta retorna vacío → el producto no existe, nunca inventar
 - **REGLA #2**: búsqueda silenciosa — nunca revelar al cliente que existe una herramienta o sistema
@@ -108,11 +139,14 @@ Instrucciones del agente sin datos de productos. Contiene:
 cp .env.example .env
 ```
 
-| Variable | Requerida | Descripción |
-|----------|-----------|-------------|
-| `ANTHROPIC_API_KEY` | Sí | API key de Anthropic |
-| `ANTHROPIC_MODEL` | No | Modelo a usar (default: `claude-sonnet-4-5`) |
-| `PORT` | No | Puerto del servidor HTTP (default: `3000`) |
+| Variable                  | Requerida | Default                  | Descripción                                      |
+| ------------------------- | --------- | ------------------------ | ------------------------------------------------ |
+| `ANTHROPIC_API_KEY`       | Sí        | —                        | API key de Anthropic                             |
+| `ANTHROPIC_MODEL`         | No        | `claude-haiku-4-5`       | Modelo a usar                                    |
+| `PORT`                    | No        | `3000`                   | Puerto del servidor HTTP                         |
+| `REDIS_URL`               | No        | `redis://localhost:6379` | URL de conexión a Redis                          |
+| `SESSION_TTL_DAYS`        | No        | `7`                      | Días de retención de sesiones en Redis           |
+| `MEMORY_EXTRACT_INTERVAL` | No        | `3`                      | Cada cuántos turnos de usuario se extrae memoria |
 
 ---
 
