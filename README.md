@@ -187,6 +187,44 @@ curl http://localhost:3000/health
 
 ---
 
+## Docker Compose
+
+### 1. Configurar variables de entorno
+
+```bash
+cp .env.example .env
+```
+
+Edita `.env` y agrega tu API key de Anthropic:
+
+```
+ANTHROPIC_API_KEY=sk-ant-tu-key-aqui
+```
+
+Las demás variables son opcionales (ver tabla en [Variables de entorno](#variables-de-entorno)). `REDIS_URL` se configura automáticamente para apuntar al contenedor de Redis.
+
+### 2. Levantar los servicios
+
+```bash
+docker compose up -d
+```
+
+Esto levanta el agente y una instancia de Redis automáticamente. La app estará disponible en `http://localhost:3000`.
+
+### 3. Ver logs
+
+```bash
+docker compose logs -f acdc-agent
+```
+
+### 4. Detener
+
+```bash
+docker compose down
+```
+
+---
+
 ## Catálogo
 
 `productos.json` es la única fuente de verdad. 711 productos en 20 categorías:
